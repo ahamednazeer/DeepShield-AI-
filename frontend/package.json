@@ -1,3 +1,31 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:74b8b602da645d54ed5f006b72dc3ac04aa5e58966400bd975c22d864aed68fb
-size 797
+{
+    "name": "deepshield-ai-frontend",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "next dev",
+        "build": "next build --webpack",
+        "start": "next start",
+        "lint": "eslint ."
+    },
+    "dependencies": {
+        "@phosphor-icons/react": "^2.1.10",
+        "lucide-react": "^0.555.0",
+        "next": "16.0.6",
+        "react": "19.2.0",
+        "react-dom": "19.2.0",
+        "recharts": "^3.5.1",
+        "sonner": "^2.0.7"
+    },
+    "devDependencies": {
+        "@tailwindcss/postcss": "^4",
+        "@types/node": "^20",
+        "@types/react": "^19",
+        "@types/react-dom": "^19",
+        "eslint": "^9",
+        "eslint-config-next": "16.0.6",
+        "tailwindcss": "^4",
+        "typescript": "5.9.3"
+    }
+}
