@@ -1,0 +1,68 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # ================= BACKEND =================
+
+      # AMD64
+      - name: Build Backend AMD64
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ahamednazeer/deepshield-ai:be-latest
+            ahamednazeer/deepshield-ai:be-${{ github.sha }}
+
+      # ARM64
+      - name: Build Backend ARM64
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ahamednazeer/deepshield-ai:be-arm64-latest
+            ahamednazeer/deepshield-ai:be-arm64-${{ github.sha }}
+
+      # ================= FRONTEND =================
+
+      # AMD64
+      - name: Build Frontend AMD64
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ahamednazeer/deepshield-ai:fe-latest
+            ahamednazeer/deepshield-ai:fe-${{ github.sha }}
+
+      # ARM64
+      - name: Build Frontend ARM64
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          platforms: linux/arm64
+          tags: |
+            ahamednazeer/deepshield-ai:fe-arm64-latest
+            ahamednazeer/deepshield-ai:fe-arm64-${{ github.sha }}
