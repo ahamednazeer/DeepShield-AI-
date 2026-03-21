@@ -131,7 +131,7 @@ def build_unified_item(current_user: dict, content_type: str, record: dict, mode
         "completed_at": completed_at,
         "processing_time": record.get("processing_time"),
         "preview_text": preview_text,
-        "permissions": resolve_permissions(current_user, verdict, moderation, item.get("status")),
+        "permissions": resolve_permissions(current_user, verdict, moderation, status),
         "moderation": to_moderation_state(moderation),
     }
 
