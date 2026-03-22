@@ -206,10 +206,6 @@ marimo/_lsp/
 __marimo__/
 
 # DeepShield Local Files
-backend/models/*.pt
-backend/models/*.pth
-backend/models/*.h5
-backend/models/*.keras
 backend/uploads/
 backend/evidence/
 .DS_Store
