@@ -14,6 +14,8 @@ librosa==0.10.2
 soundfile==0.12.1
 torch
 torchvision
+timm
+safetensors
 tensorflow==2.20.0
 scikit-learn
 httpx
