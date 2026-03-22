@@ -185,7 +185,7 @@ export default function LoginPage() {
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-slate-500">Detection</span>
-                                <span className="text-green-400">Image · Video · Audio</span>
+                                <span className="text-green-400">Image · Video</span>
                             </div>
                             <div className="flex justify-between">
                                 <span className="text-slate-500">Status</span>

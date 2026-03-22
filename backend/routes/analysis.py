@@ -6,10 +6,18 @@ from datetime import datetime, timezone
 import aiosqlite
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 
-from auth import get_current_user
+from auth import get_current_user, require_active_user
 from database import get_db
-from models import AnalysisHistoryResponse, AnalysisResponse, DashboardStats
+from models import (
+    AnalysisHistoryResponse,
+    AnalysisResponse,
+    AnalysisStartRequest,
+    DashboardStats,
+    MediaModelCatalogResponse,
+    MediaModelOption,
+)
 from services.audit import log_event
+from services.model_catalog import list_media_models, resolve_media_model_runtime, resolve_selected_model
 from services.content import build_unified_history
 from services.moderation import (
     BLOCKED_VERDICTS,
@@ -85,6 +93,7 @@ async def _build_analysis_response(
         video_score=analysis["video_score"],
         audio_score=analysis["audio_score"],
         processing_time=analysis["processing_time"],
+        selected_model=analysis.get("selected_model"),
         model_version=analysis["model_version"],
         frames_total=frames_total,
         frames_processed=frames_processed,
@@ -125,6 +134,7 @@ async def run_analysis(analysis_id: int):
         start_time = time.time()
         file_path = str(UPLOAD_DIR / analysis["filename"])
         media_type = analysis["media_type"]
+        model_runtime = resolve_media_model_runtime(media_type, analysis.get("selected_model"))
 
         try:
             result = {}
@@ -133,7 +143,7 @@ async def run_analysis(analysis_id: int):
             if media_type == "image":
                 from detectors.image_detector import detect_image
 
-                result = await asyncio.to_thread(detect_image, file_path)
+                result = await asyncio.to_thread(detect_image, file_path, model_runtime)
                 if "heatmap" in result:
                     heatmap_name = f"heatmap_{analysis_id}.png"
                     heatmap_path = EVIDENCE_DIR / heatmap_name
@@ -165,7 +175,7 @@ async def run_analysis(analysis_id: int):
                         "updated_at": time.time(),
                     }
 
-                result = await asyncio.to_thread(detect_video, file_path, on_progress=on_progress)
+                result = await asyncio.to_thread(detect_video, file_path, on_progress=on_progress, model_config=model_runtime)
 
             elif media_type == "audio":
                 from detectors.audio_detector import detect_audio
@@ -319,7 +329,8 @@ async def run_analysis(analysis_id: int):
 async def start_analysis(
     analysis_id: int,
     background_tasks: BackgroundTasks,
-    current_user: dict = Depends(get_current_user),
+    payload: AnalysisStartRequest | None = None,
+    current_user: dict = Depends(require_active_user),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     analysis = await _fetch_analysis(db, analysis_id, current_user)
@@ -329,6 +340,16 @@ async def start_analysis(
     if analysis["status"] not in ("pending", "failed"):
         raise HTTPException(status_code=400, detail=f"Analysis is already {analysis['status']}")
 
+    selected_model = payload.selected_model if payload else analysis.get("selected_model")
+    try:
+        selected_model = resolve_selected_model(analysis["media_type"], selected_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    await db.execute(
+        "UPDATE analyses SET selected_model = ? WHERE id = ?",
+        (selected_model, analysis_id),
+    )
     background_tasks.add_task(run_analysis, analysis_id)
     await log_event(
         db,
@@ -336,9 +357,25 @@ async def start_analysis(
         target_type="media",
         target_id=analysis_id,
         actor_user_id=current_user["id"],
+        details={"selected_model": selected_model},
     )
     await db.commit()
-    return {"message": "Analysis started", "id": analysis_id, "status": "processing"}
+    return {"message": "Analysis started", "id": analysis_id, "status": "processing", "selected_model": selected_model}
+
+
+@router.get("/models/{media_type}", response_model=MediaModelCatalogResponse)
+async def get_media_models(
+    media_type: str,
+    current_user: dict = Depends(get_current_user),
+):
+    try:
+        options = list_media_models(media_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return MediaModelCatalogResponse(
+        media_type=media_type,
+        models=[MediaModelOption(**option) for option in options],
+    )
 
 
 @router.get("/analysis/{analysis_id}", response_model=AnalysisResponse)

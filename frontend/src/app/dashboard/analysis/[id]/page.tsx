@@ -285,6 +285,8 @@ export default function AnalysisDetailPage() {
                         <h3 className="text-sm font-mono text-slate-400 uppercase tracking-widest mb-4">Details</h3>
                         <div className="space-y-3 text-sm text-slate-300">
                             <div className="flex items-center justify-between"><span>Media Type</span><StatusBadge status={analysis.media_type} /></div>
+                            <div className="flex items-center justify-between"><span>Requested Model</span><span className="font-mono text-xs">{analysis.selected_model || 'auto'}</span></div>
+                            <div className="flex items-center justify-between"><span>Model Version</span><span className="font-mono text-xs">{analysis.model_version || 'default'}</span></div>
                             <div className="flex items-center justify-between"><span>Created</span><span className="font-mono text-xs">{new Date(analysis.created_at).toLocaleString()}</span></div>
                             <div className="flex items-center justify-between"><span>Completed</span><span className="font-mono text-xs">{analysis.completed_at ? new Date(analysis.completed_at).toLocaleString() : '—'}</span></div>
                             <button onClick={() => router.push('/dashboard/notifications')} className="btn-secondary w-full flex items-center justify-center gap-2">

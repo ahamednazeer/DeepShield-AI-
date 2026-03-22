@@ -67,6 +67,7 @@ class AnalysisResponse(AppBaseModel):
     video_score: Optional[float] = None
     audio_score: Optional[float] = None
     processing_time: Optional[float] = None
+    selected_model: Optional[str] = None
     model_version: Optional[str] = None
     frames_total: Optional[int] = None
     frames_processed: Optional[int] = None
@@ -197,3 +198,24 @@ class LinkAnalysisResponse(AppBaseModel):
 class LinkAnalysisHistoryResponse(AppBaseModel):
     analyses: List[LinkAnalysisResponse]
     total: int
+
+
+class AnalysisStartRequest(AppBaseModel):
+    selected_model: Optional[str] = None
+
+
+class MediaModelOption(AppBaseModel):
+    id: str
+    label: str
+    description: Optional[str] = None
+    available: bool = True
+    recommended: bool = False
+    experimental: bool = False
+    backend: Optional[str] = None
+    resolved_default: Optional[str] = None
+    filename: Optional[str] = None
+
+
+class MediaModelCatalogResponse(AppBaseModel):
+    media_type: str
+    models: List[MediaModelOption]

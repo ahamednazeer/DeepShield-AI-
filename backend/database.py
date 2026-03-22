@@ -156,6 +156,7 @@ async def init_db():
                 media_type TEXT NOT NULL,
                 file_size INTEGER NOT NULL,
                 status TEXT DEFAULT 'pending',
+                selected_model TEXT,
                 overall_score REAL,
                 verdict TEXT,
                 raw_verdict TEXT,
@@ -320,6 +321,7 @@ async def init_db():
 
         await _ensure_column(db, "users", "status TEXT DEFAULT 'active'")
         await _ensure_column(db, "users", "last_login_at TIMESTAMP")
+        await _ensure_column(db, "analyses", "selected_model TEXT")
         await _ensure_column(db, "analyses", "raw_verdict TEXT")
         await _ensure_column(db, "text_analyses", "raw_verdict TEXT")
 

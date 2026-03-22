@@ -39,7 +39,6 @@ const statusStyles: Record<string, string> = {
     unknown: 'text-slate-400 bg-slate-950/50 border-slate-800',
     image: 'text-purple-400 bg-purple-950/50 border-purple-800',
     video: 'text-cyan-400 bg-cyan-950/50 border-cyan-800',
-    audio: 'text-amber-400 bg-amber-950/50 border-amber-800',
     text: 'text-cyan-400 bg-cyan-950/50 border-cyan-800',
     link: 'text-sky-400 bg-sky-950/50 border-sky-800',
     info: 'text-blue-400 bg-blue-950/50 border-blue-800',
@@ -48,6 +47,9 @@ const statusStyles: Record<string, string> = {
     high: 'text-red-400 bg-red-950/50 border-red-800',
     medium: 'text-yellow-400 bg-yellow-950/50 border-yellow-800',
     low: 'text-green-400 bg-green-950/50 border-green-800',
+    recommended: 'text-emerald-300 bg-emerald-950/40 border-emerald-800',
+    experimental: 'text-fuchsia-300 bg-fuchsia-950/40 border-fuchsia-800',
+    unavailable: 'text-slate-400 bg-slate-950/50 border-slate-800',
     flagged: 'text-orange-400 bg-orange-950/50 border-orange-800',
     quarantined: 'text-red-400 bg-red-950/50 border-red-800',
 };

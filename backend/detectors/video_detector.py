@@ -6,14 +6,13 @@ temporal consistency across the video.
 
 import os
 import sys
+import inspect
+import threading
+import warnings
 import numpy as np
 import cv2
 from pathlib import Path
 from typing import Optional, Tuple, Callable, List
-
-# Use legacy Keras for older .h5 models
-os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
-
 
 # Use Haar cascade for face detection (built-in to OpenCV, no extra models needed)
 HAAR_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
@@ -24,13 +23,31 @@ REF_DIR = Path(os.getenv(
     "VIDEO_REFERENCE_DIR",
     str(ROOT_DIR / "Deepfake-Detection-master"),
 ))
-MODEL_PATH = Path(os.getenv(
-    "VIDEO_MODEL_PATH",
-    str(Path(__file__).resolve().parent.parent / "models" / "model.h5"),
-))
+MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
+
+
+def _resolve_default_video_model_path() -> Optional[Path]:
+    override = (os.getenv("VIDEO_MODEL_PATH") or "").strip()
+    if override:
+        return Path(override)
+
+    for candidate in ("model.h5", "final_model.keras", "deepfake.keras"):
+        path = MODELS_DIR / candidate
+        if path.exists():
+            return path
+    return None
+
+
+MODEL_PATH = _resolve_default_video_model_path()
 MODEL_BACKEND = os.getenv("VIDEO_MODEL_BACKEND", "auto").lower()
-MODEL_KERAS_PREPROCESS = os.getenv("VIDEO_KERAS_PREPROCESS", "densenet").lower()
+MODEL_KERAS_PREPROCESS = os.getenv(
+    "VIDEO_KERAS_PREPROCESS",
+    "resnet" if MODEL_PATH and MODEL_PATH.name == "model.h5" else "densenet",
+).lower()
+MODEL_REFERENCE_IMPL = os.getenv("VIDEO_REFERENCE_IMPL", "legacy").lower()
+MODEL_PIPELINE_MODE = os.getenv("VIDEO_PIPELINE_MODE", "default").lower()
 MODEL_NAME = os.getenv("VIDEO_TORCH_MODEL_NAME", "xception")
+TORCH_USE_PRETRAINED = os.getenv("VIDEO_TORCH_PRETRAINED", "0") == "1"
 MODEL_DROPOUT = float(os.getenv("VIDEO_TORCH_MODEL_DROPOUT", "0.5"))
 MODEL_NUM_FRAMES = int(os.getenv("VIDEO_MODEL_NUM_FRAMES", "15"))
 MODEL_IMAGE_SIZE = int(os.getenv("VIDEO_MODEL_IMAGE_SIZE", "224"))
@@ -48,6 +65,7 @@ MODEL_WEIGHT_MIN_FACTOR = float(os.getenv("VIDEO_MODEL_WEIGHT_MIN_FACTOR", "0.5"
 MODEL_BATCH_SIZE = int(os.getenv("VIDEO_MODEL_BATCH_SIZE", "8"))
 REFERENCE_ONLY = os.getenv("VIDEO_REFERENCE_ONLY", "1") == "1"
 PROCESS_ALL_FRAMES = os.getenv("VIDEO_PROCESS_ALL_FRAMES", "1") == "1"
+MODEL_FRAME_SELECTION = os.getenv("VIDEO_FRAME_SELECTION", "uniform").lower()
 PROGRESS_EVERY = int(os.getenv("VIDEO_PROGRESS_EVERY", "5"))
 KERAS_AGG = os.getenv("VIDEO_KERAS_AGG", "gated_max").lower()
 KERAS_TOPK = float(os.getenv("VIDEO_KERAS_TOPK", "0.2"))
@@ -61,9 +79,160 @@ _TORCH_MODEL_WARN: Optional[str] = None
 _PREPROCESS = None
 _KERAS_MODEL = None
 _KERAS_ERROR: Optional[str] = None
+_KERAS_WARN: Optional[str] = None
 _KERAS_INPUT_SHAPE: Optional[Tuple[int, int]] = None
 _DLIB_DETECTOR = None
 _DLIB_ERROR: Optional[str] = None
+_MODEL_RUNTIME_LOCK = threading.RLock()
+
+
+def _default_video_runtime(model_path: Optional[Path]) -> dict:
+    if model_path and model_path.name == "model_97_acc_100_frames_FF_data.pt":
+        return {
+            "path": model_path,
+            "backend": "torch",
+            "reference_impl": "deep_learning_master",
+            "pipeline_mode": "default",
+            "keras_preprocess": "densenet",
+            "model_name": MODEL_NAME,
+            "pretrained_weights": False,
+            "dropout": MODEL_DROPOUT,
+            "num_frames": 100,
+            "image_size": 112,
+            "fake_index": 0,
+            "strict": MODEL_STRICT,
+            "face_margin": MODEL_FACE_MARGIN,
+            "reference_only": True,
+            "process_all_frames": False,
+            "frame_selection": "first",
+            "reference_dir": REF_DIR,
+        }
+    return {
+        "path": model_path,
+        "backend": MODEL_BACKEND,
+        "reference_impl": MODEL_REFERENCE_IMPL,
+        "pipeline_mode": MODEL_PIPELINE_MODE,
+        "keras_preprocess": MODEL_KERAS_PREPROCESS,
+        "model_name": MODEL_NAME,
+        "pretrained_weights": TORCH_USE_PRETRAINED,
+        "dropout": MODEL_DROPOUT,
+        "num_frames": MODEL_NUM_FRAMES,
+        "image_size": MODEL_IMAGE_SIZE,
+        "fake_index": MODEL_FAKE_INDEX,
+        "strict": MODEL_STRICT,
+        "face_margin": MODEL_FACE_MARGIN,
+        "reference_only": REFERENCE_ONLY,
+        "process_all_frames": PROCESS_ALL_FRAMES,
+        "frame_selection": MODEL_FRAME_SELECTION,
+        "reference_dir": REF_DIR,
+    }
+
+
+def _snapshot_runtime() -> dict:
+    return {
+        "REF_DIR": REF_DIR,
+        "MODEL_PATH": MODEL_PATH,
+        "MODEL_BACKEND": MODEL_BACKEND,
+        "MODEL_KERAS_PREPROCESS": MODEL_KERAS_PREPROCESS,
+        "MODEL_REFERENCE_IMPL": MODEL_REFERENCE_IMPL,
+        "MODEL_PIPELINE_MODE": MODEL_PIPELINE_MODE,
+        "MODEL_NAME": MODEL_NAME,
+        "TORCH_USE_PRETRAINED": TORCH_USE_PRETRAINED,
+        "MODEL_DROPOUT": MODEL_DROPOUT,
+        "MODEL_NUM_FRAMES": MODEL_NUM_FRAMES,
+        "MODEL_IMAGE_SIZE": MODEL_IMAGE_SIZE,
+        "MODEL_FAKE_INDEX": MODEL_FAKE_INDEX,
+        "MODEL_STRICT": MODEL_STRICT,
+        "MODEL_FACE_MARGIN": MODEL_FACE_MARGIN,
+        "REFERENCE_ONLY": REFERENCE_ONLY,
+        "PROCESS_ALL_FRAMES": PROCESS_ALL_FRAMES,
+        "MODEL_FRAME_SELECTION": MODEL_FRAME_SELECTION,
+        "_TORCH_MODEL": _TORCH_MODEL,
+        "_TORCH_MODEL_ERROR": _TORCH_MODEL_ERROR,
+        "_TORCH_MODEL_WARN": _TORCH_MODEL_WARN,
+        "_PREPROCESS": _PREPROCESS,
+        "_KERAS_MODEL": _KERAS_MODEL,
+        "_KERAS_ERROR": _KERAS_ERROR,
+        "_KERAS_WARN": _KERAS_WARN,
+        "_KERAS_INPUT_SHAPE": _KERAS_INPUT_SHAPE,
+    }
+
+
+def _apply_runtime(model_config: Optional[dict]) -> None:
+    global REF_DIR, MODEL_PATH, MODEL_BACKEND, MODEL_KERAS_PREPROCESS, MODEL_REFERENCE_IMPL, MODEL_PIPELINE_MODE
+    global MODEL_NAME, TORCH_USE_PRETRAINED, MODEL_DROPOUT, MODEL_NUM_FRAMES, MODEL_IMAGE_SIZE, MODEL_FAKE_INDEX
+    global MODEL_STRICT, MODEL_FACE_MARGIN, REFERENCE_ONLY, PROCESS_ALL_FRAMES, MODEL_FRAME_SELECTION
+    global _TORCH_MODEL, _TORCH_MODEL_ERROR, _TORCH_MODEL_WARN, _PREPROCESS
+    global _KERAS_MODEL, _KERAS_ERROR, _KERAS_WARN, _KERAS_INPUT_SHAPE
+
+    config = model_config or {}
+    if "path" in config:
+        path = Path(config["path"]) if config["path"] else None
+    else:
+        path = MODEL_PATH
+    runtime = _default_video_runtime(path)
+    runtime.update({k: v for k, v in config.items() if v is not None})
+
+    REF_DIR = Path(runtime.get("reference_dir") or REF_DIR)
+    MODEL_PATH = Path(runtime["path"]) if runtime.get("path") else None
+    MODEL_BACKEND = str(runtime.get("backend") or MODEL_BACKEND).lower()
+    MODEL_KERAS_PREPROCESS = str(runtime.get("keras_preprocess") or MODEL_KERAS_PREPROCESS).lower()
+    MODEL_REFERENCE_IMPL = str(runtime.get("reference_impl") or MODEL_REFERENCE_IMPL).lower()
+    MODEL_PIPELINE_MODE = str(runtime.get("pipeline_mode") or MODEL_PIPELINE_MODE).lower()
+    MODEL_NAME = str(runtime.get("model_name") or MODEL_NAME)
+    TORCH_USE_PRETRAINED = bool(runtime.get("pretrained_weights", TORCH_USE_PRETRAINED))
+    MODEL_DROPOUT = float(runtime.get("dropout", MODEL_DROPOUT))
+    MODEL_NUM_FRAMES = int(runtime.get("num_frames", MODEL_NUM_FRAMES))
+    MODEL_IMAGE_SIZE = int(runtime.get("image_size", MODEL_IMAGE_SIZE))
+    MODEL_FAKE_INDEX = int(runtime.get("fake_index", MODEL_FAKE_INDEX))
+    MODEL_STRICT = bool(runtime.get("strict", MODEL_STRICT))
+    MODEL_FACE_MARGIN = float(runtime.get("face_margin", MODEL_FACE_MARGIN))
+    REFERENCE_ONLY = bool(runtime.get("reference_only", REFERENCE_ONLY))
+    PROCESS_ALL_FRAMES = bool(runtime.get("process_all_frames", PROCESS_ALL_FRAMES))
+    MODEL_FRAME_SELECTION = str(runtime.get("frame_selection") or MODEL_FRAME_SELECTION).lower()
+
+    _TORCH_MODEL = None
+    _TORCH_MODEL_ERROR = None
+    _TORCH_MODEL_WARN = None
+    _PREPROCESS = None
+    _KERAS_MODEL = None
+    _KERAS_ERROR = None
+    _KERAS_WARN = None
+    _KERAS_INPUT_SHAPE = None
+
+
+def _restore_runtime(snapshot: dict) -> None:
+    global REF_DIR, MODEL_PATH, MODEL_BACKEND, MODEL_KERAS_PREPROCESS, MODEL_REFERENCE_IMPL, MODEL_PIPELINE_MODE
+    global MODEL_NAME, TORCH_USE_PRETRAINED, MODEL_DROPOUT, MODEL_NUM_FRAMES, MODEL_IMAGE_SIZE, MODEL_FAKE_INDEX
+    global MODEL_STRICT, MODEL_FACE_MARGIN, REFERENCE_ONLY, PROCESS_ALL_FRAMES, MODEL_FRAME_SELECTION
+    global _TORCH_MODEL, _TORCH_MODEL_ERROR, _TORCH_MODEL_WARN, _PREPROCESS
+    global _KERAS_MODEL, _KERAS_ERROR, _KERAS_WARN, _KERAS_INPUT_SHAPE
+
+    REF_DIR = snapshot["REF_DIR"]
+    MODEL_PATH = snapshot["MODEL_PATH"]
+    MODEL_BACKEND = snapshot["MODEL_BACKEND"]
+    MODEL_KERAS_PREPROCESS = snapshot["MODEL_KERAS_PREPROCESS"]
+    MODEL_REFERENCE_IMPL = snapshot["MODEL_REFERENCE_IMPL"]
+    MODEL_PIPELINE_MODE = snapshot["MODEL_PIPELINE_MODE"]
+    MODEL_NAME = snapshot["MODEL_NAME"]
+    TORCH_USE_PRETRAINED = snapshot["TORCH_USE_PRETRAINED"]
+    MODEL_DROPOUT = snapshot["MODEL_DROPOUT"]
+    MODEL_NUM_FRAMES = snapshot["MODEL_NUM_FRAMES"]
+    MODEL_IMAGE_SIZE = snapshot["MODEL_IMAGE_SIZE"]
+    MODEL_FAKE_INDEX = snapshot["MODEL_FAKE_INDEX"]
+    MODEL_STRICT = snapshot["MODEL_STRICT"]
+    MODEL_FACE_MARGIN = snapshot["MODEL_FACE_MARGIN"]
+    REFERENCE_ONLY = snapshot["REFERENCE_ONLY"]
+    PROCESS_ALL_FRAMES = snapshot["PROCESS_ALL_FRAMES"]
+    MODEL_FRAME_SELECTION = snapshot["MODEL_FRAME_SELECTION"]
+    _TORCH_MODEL = snapshot["_TORCH_MODEL"]
+    _TORCH_MODEL_ERROR = snapshot["_TORCH_MODEL_ERROR"]
+    _TORCH_MODEL_WARN = snapshot["_TORCH_MODEL_WARN"]
+    _PREPROCESS = snapshot["_PREPROCESS"]
+    _KERAS_MODEL = snapshot["_KERAS_MODEL"]
+    _KERAS_ERROR = snapshot["_KERAS_ERROR"]
+    _KERAS_WARN = snapshot["_KERAS_WARN"]
+    _KERAS_INPUT_SHAPE = snapshot["_KERAS_INPUT_SHAPE"]
 
 
 def extract_frames(video_path: str, fps_target: int = 2, max_frames: int = 30) -> list:
@@ -128,6 +297,31 @@ def extract_uniform_frames(video_path: str, num_frames: int) -> list:
     return frames
 
 
+def extract_first_frames(video_path: str, num_frames: int) -> list:
+    """Extract the first N frames sequentially."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise ValueError(f"Cannot open video: {video_path}")
+
+    frames = []
+    idx = 0
+    while cap.isOpened() and len(frames) < num_frames:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        frames.append({"index": idx, "frame": frame})
+        idx += 1
+
+    cap.release()
+    if not frames:
+        return []
+
+    while len(frames) < num_frames:
+        frames.append(frames[-1])
+
+    return frames
+
+
 def extract_all_frames(
     video_path: str,
     on_progress: Optional[Callable[[int, Optional[int]], None]] = None,
@@ -169,6 +363,8 @@ def _ensure_reference_importable() -> Optional[str]:
 
 
 def _use_keras_backend() -> bool:
+    if MODEL_PATH is None:
+        return False
     if MODEL_BACKEND in ("keras", "tf", "tensorflow"):
         return True
     if MODEL_BACKEND in ("torch", "pytorch"):
@@ -178,11 +374,15 @@ def _use_keras_backend() -> bool:
 
 def _load_keras_model() -> Tuple[Optional[object], Optional[str]]:
     """Lazy-load Keras .h5/.keras model."""
-    global _KERAS_MODEL, _KERAS_ERROR, _KERAS_INPUT_SHAPE
+    global _KERAS_MODEL, _KERAS_ERROR, _KERAS_INPUT_SHAPE, _KERAS_WARN
 
     if _KERAS_MODEL is not None:
         return _KERAS_MODEL, None
     if _KERAS_ERROR:
+        return None, _KERAS_ERROR
+
+    if MODEL_PATH is None:
+        _KERAS_ERROR = "No video model configured."
         return None, _KERAS_ERROR
 
     if not MODEL_PATH.exists():
@@ -191,7 +391,10 @@ def _load_keras_model() -> Tuple[Optional[object], Optional[str]]:
 
     try:
         import tensorflow as tf
-        model = tf.keras.models.load_model(str(MODEL_PATH), compile=False)
+        if MODEL_PATH.name == "model.h5":
+            model = _load_model_h5_resnet_compat(tf)
+        else:
+            model = tf.keras.models.load_model(str(MODEL_PATH), compile=False)
         _KERAS_MODEL = model
 
         shape = model.input_shape
@@ -205,6 +408,39 @@ def _load_keras_model() -> Tuple[Optional[object], Optional[str]]:
     except Exception as e:
         _KERAS_ERROR = str(e)
         return None, _KERAS_ERROR
+
+
+def _load_model_h5_resnet_compat(tf):
+    from tensorflow.keras import layers, models
+    from tensorflow.keras.applications import ResNet50
+
+    base = ResNet50(weights=None, include_top=True, input_shape=(224, 224, 3))
+    base.trainable = False
+    model = models.Sequential(
+        [
+            layers.Input(shape=(224, 224, 3)),
+            base,
+            layers.Flatten(),
+            layers.Dense(64, activation="relu"),
+            layers.Dense(48, activation="relu"),
+            layers.Dense(20, activation="relu"),
+            layers.Dense(2, activation="softmax"),
+        ]
+    )
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        model.load_weights(str(MODEL_PATH), by_name=True, skip_mismatch=True)
+
+    mismatch_count = sum(1 for warning in caught if "Skipping loading weights" in str(warning.message))
+    if mismatch_count:
+        global _KERAS_WARN
+        _KERAS_WARN = (
+            f"{MODEL_PATH.name} loaded with {mismatch_count} skipped backbone weight mismatches. "
+            "Predictions will run, but this checkpoint may be incomplete."
+        )
+
+    return model
 
 
 def _keras_preprocess_batch(batch: np.ndarray) -> np.ndarray:
@@ -234,6 +470,73 @@ def _aggregate_frame_probs(frame_probs: np.ndarray) -> float:
             return float((1.0 - KERAS_MAX_WEIGHT) * mean_score + KERAS_MAX_WEIGHT * max_score)
         return mean_score
     return mean_score
+
+
+def _torch_load_checkpoint(model_path: Path):
+    import torch
+
+    kwargs = {"map_location": "cpu"}
+    try:
+        if "weights_only" in inspect.signature(torch.load).parameters:
+            kwargs["weights_only"] = False
+    except (TypeError, ValueError):
+        pass
+    return torch.load(str(model_path), **kwargs)
+
+
+def _hf_cache_has_weights(repo_id: str, candidate_filenames: list[str]) -> bool:
+    cache_root = Path(os.getenv("HF_HUB_CACHE", str(Path.home() / ".cache" / "huggingface" / "hub")))
+    repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
+    if not repo_dir.exists():
+        return False
+    for filename in candidate_filenames:
+        if filename and any(repo_dir.glob(f"**/{filename}")):
+            return True
+    return False
+
+
+def _create_pretrained_timm_model(model_name: str):
+    import timm
+
+    pretrained_cfg = timm.get_pretrained_cfg(model_name)
+    repo_id = getattr(pretrained_cfg, "hf_hub_id", None)
+    hf_filename = getattr(pretrained_cfg, "hf_hub_filename", None)
+    if repo_id:
+        candidate_filenames = [hf_filename] if hf_filename else []
+        candidate_filenames.extend(["model.safetensors", "pytorch_model.bin"])
+        if not _hf_cache_has_weights(repo_id, candidate_filenames):
+            raise RuntimeError(
+                f"Pretrained weights for {model_name} are not cached locally. "
+                "Download them once in an environment with internet access, then rerun."
+            )
+
+    previous_offline = os.environ.get("HF_HUB_OFFLINE")
+    previous_progress = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    try:
+        return timm.create_model(model_name, pretrained=True)
+    finally:
+        if previous_offline is None:
+            os.environ.pop("HF_HUB_OFFLINE", None)
+        else:
+            os.environ["HF_HUB_OFFLINE"] = previous_offline
+        if previous_progress is None:
+            os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
+        else:
+            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous_progress
+
+
+def _transformer_anomaly_from_probs(probs_row: np.ndarray) -> float:
+    probs = np.asarray(probs_row, dtype=np.float32)
+    if probs.ndim != 1 or probs.size == 0:
+        return 0.5
+    sorted_probs = np.sort(probs)[::-1]
+    top1 = float(sorted_probs[0])
+    top2 = float(sorted_probs[1]) if sorted_probs.size > 1 else 0.0
+    entropy = float(-(probs * np.log(np.clip(probs, 1e-9, 1.0))).sum() / np.log(probs.size))
+    score = (0.65 * entropy) + (0.20 * (1.0 - top1)) + (0.15 * (1.0 - max(top1 - top2, 0.0)))
+    return float(np.clip(score, 0.0, 1.0))
 
 
 def _predict_keras_model(frames: list) -> Tuple[Optional[float], Optional[list], Optional[list], Optional[str]]:
@@ -427,6 +730,32 @@ def _load_preprocess() -> Tuple[Optional[object], Optional[str]]:
     if _PREPROCESS is not None:
         return _PREPROCESS, None
 
+    if MODEL_REFERENCE_IMPL == "deep_learning_master":
+        try:
+            from torchvision import transforms
+
+            _PREPROCESS = transforms.Compose([
+                transforms.ToPILImage(),
+                transforms.Resize((MODEL_IMAGE_SIZE, MODEL_IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ])
+            return _PREPROCESS, None
+        except Exception as e:
+            return None, str(e)
+    if MODEL_REFERENCE_IMPL in {"vit_deit", "vit_pretrained"}:
+        try:
+            from torchvision import transforms
+
+            _PREPROCESS = transforms.Compose([
+                transforms.Resize((MODEL_IMAGE_SIZE, MODEL_IMAGE_SIZE)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+            ])
+            return _PREPROCESS, None
+        except Exception as e:
+            return None, str(e)
+
     err = _ensure_reference_importable()
     if err:
         return None, err
@@ -448,12 +777,106 @@ def _load_video_model() -> Tuple[Optional[object], Optional[str]]:
     if _TORCH_MODEL_ERROR:
         return None, _TORCH_MODEL_ERROR
 
+    if MODEL_PATH is None:
+        if TORCH_USE_PRETRAINED:
+            try:
+                model = _create_pretrained_timm_model(MODEL_NAME)
+                model.eval()
+                _TORCH_MODEL = model
+                return _TORCH_MODEL, None
+            except Exception as e:
+                _TORCH_MODEL_ERROR = str(e)
+                return None, _TORCH_MODEL_ERROR
+        _TORCH_MODEL_ERROR = "No video model configured."
+        return None, _TORCH_MODEL_ERROR
+
     if not MODEL_PATH.exists():
         _TORCH_MODEL_ERROR = f"Model file not found at {MODEL_PATH}"
         return None, _TORCH_MODEL_ERROR
 
     try:
         _TORCH_MODEL_WARN = None
+        if MODEL_REFERENCE_IMPL == "deep_learning_master":
+            import torch
+            from torch import nn
+            from torchvision import models
+
+            class DeepLearningMasterModel(nn.Module):
+                def __init__(self, num_classes=2, latent_dim=2048, lstm_layers=1, hidden_dim=2048, bidirectional=False):
+                    super().__init__()
+                    base = models.resnext50_32x4d(weights=None)
+                    self.model = nn.Sequential(*list(base.children())[:-2])
+                    self.lstm = nn.LSTM(latent_dim, hidden_dim, lstm_layers, bidirectional=bidirectional)
+                    self.dp = nn.Dropout(0.4)
+                    self.linear1 = nn.Linear(2048, num_classes)
+                    self.avgpool = nn.AdaptiveAvgPool2d(1)
+
+                def forward(self, x):
+                    batch_size, seq_length, c, h, w = x.shape
+                    x = x.view(batch_size * seq_length, c, h, w)
+                    fmap = self.model(x)
+                    x = self.avgpool(fmap)
+                    x = x.view(batch_size, seq_length, 2048)
+                    x_lstm, _ = self.lstm(x, None)
+                    return fmap, self.dp(self.linear1(x_lstm[:, -1, :]))
+
+            checkpoint = _torch_load_checkpoint(MODEL_PATH)
+            model = DeepLearningMasterModel()
+            missing, unexpected = model.load_state_dict(checkpoint, strict=False)
+            if missing or unexpected:
+                _TORCH_MODEL_WARN = (
+                    f"Reference checkpoint loaded with {len(missing)} missing keys and {len(unexpected)} unexpected keys."
+                )
+            model.eval()
+            _TORCH_MODEL = model
+            return _TORCH_MODEL, None
+        if MODEL_REFERENCE_IMPL == "vit_pretrained":
+            import torch
+
+            if MODEL_PATH is None:
+                model = _create_pretrained_timm_model(MODEL_NAME)
+                model.eval()
+                _TORCH_MODEL = model
+                return _TORCH_MODEL, None
+
+            checkpoint = _torch_load_checkpoint(MODEL_PATH)
+            state_dict = checkpoint.get("state_dict") if isinstance(checkpoint, dict) and "state_dict" in checkpoint else checkpoint
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                state_dict = checkpoint["model_state_dict"]
+            if not isinstance(state_dict, dict):
+                _TORCH_MODEL_ERROR = "Unsupported transformer checkpoint format."
+                return None, _TORCH_MODEL_ERROR
+
+            cleaned = {}
+            for key, value in state_dict.items():
+                cleaned[key[7:] if key.startswith("module.") else key] = value
+
+            candidates = [MODEL_NAME, "deit_small_patch16_224", "deit_base_patch16_224", "vit_base_patch16_224", "vit_small_patch16_224"]
+            best = None
+            best_score = None
+            for candidate in candidates:
+                try:
+                    import timm
+                    model = timm.create_model(candidate, pretrained=False, num_classes=2)
+                    missing, unexpected = model.load_state_dict(cleaned, strict=False)
+                    score = len(missing) + len(unexpected)
+                    if best_score is None or score < best_score:
+                        best = model
+                        best_score = score
+                        _TORCH_MODEL_WARN = (
+                            None if score == 0 else f"Transformer checkpoint matched {candidate} with {len(missing)} missing keys and {len(unexpected)} unexpected keys."
+                        )
+                        if score == 0:
+                            break
+                except Exception:
+                    continue
+            if best is None:
+                _TORCH_MODEL_ERROR = "No compatible ViT/DeiT architecture matched the checkpoint."
+                return None, _TORCH_MODEL_ERROR
+            best.eval()
+            _TORCH_MODEL = best
+            return _TORCH_MODEL, None
+
         err = _ensure_reference_importable()
         if err:
             _TORCH_MODEL_ERROR = err
@@ -463,7 +886,7 @@ def _load_video_model() -> Tuple[Optional[object], Optional[str]]:
         from network.models import model_selection
 
         model = model_selection(modelname=MODEL_NAME, num_out_classes=2, dropout=MODEL_DROPOUT)
-        checkpoint = torch.load(str(MODEL_PATH), map_location="cpu")
+        checkpoint = _torch_load_checkpoint(MODEL_PATH)
 
         state_dict = None
         if isinstance(checkpoint, dict):
@@ -535,6 +958,23 @@ def _predict_video_model(frames: list) -> Tuple[Optional[float], Optional[list],
         if prep_err:
             return None, None, None, prep_err
 
+        if MODEL_REFERENCE_IMPL == "deep_learning_master":
+            batch = batch.unsqueeze(0)
+            with torch.no_grad():
+                output = model(batch)
+
+            logits = output[1] if isinstance(output, tuple) else output
+            if logits.ndim == 1:
+                logits = logits.unsqueeze(0)
+
+            probs = torch.softmax(logits, dim=-1)
+            fake_index = MODEL_FAKE_INDEX
+            if fake_index < 0 or fake_index >= probs.shape[-1]:
+                fake_index = probs.shape[-1] - 1
+            avg_fake = float(probs[0, fake_index].item())
+            probs_list = [round(float(p), 6) for p in probs[0].detach().cpu().numpy().tolist()]
+            return avg_fake, probs_list, [round(avg_fake, 6)] * min(len(frames), MODEL_NUM_FRAMES), None
+
         fake_probs_all = []
         sum_probs = None
         count = 0
@@ -543,9 +983,23 @@ def _predict_video_model(frames: list) -> Tuple[Optional[float], Optional[list],
             chunk = batch[start:start + MODEL_BATCH_SIZE]
             with torch.no_grad():
                 logits = model(chunk)
+            if isinstance(logits, (tuple, list)):
+                logits = logits[0]
 
             if logits.ndim == 1:
                 logits = logits.unsqueeze(0) if logits.numel() == 2 else logits.unsqueeze(1)
+
+            if MODEL_REFERENCE_IMPL == "vit_pretrained" and logits.shape[-1] > 2:
+                probs = torch.softmax(logits, dim=-1)
+                fake_probs = torch.as_tensor(
+                    [_transformer_anomaly_from_probs(row.detach().cpu().numpy()) for row in probs],
+                    dtype=torch.float32,
+                )
+                chunk_sum = fake_probs.sum()
+                sum_probs = chunk_sum if sum_probs is None else sum_probs + chunk_sum
+                fake_probs_all.extend(fake_probs.detach().cpu().numpy().tolist())
+                count += logits.shape[0]
+                continue
 
             if logits.shape[-1] == 1:
                 probs = torch.sigmoid(logits).squeeze(-1)
@@ -623,9 +1077,23 @@ def _predict_video_model_stream(
             batch = torch.stack(tensors, dim=0)
             with torch.no_grad():
                 logits = model(batch)
+            if isinstance(logits, (tuple, list)):
+                logits = logits[0]
 
             if logits.ndim == 1:
                 logits = logits.unsqueeze(0) if logits.numel() == 2 else logits.unsqueeze(1)
+
+            if MODEL_REFERENCE_IMPL == "vit_pretrained" and logits.shape[-1] > 2:
+                probs = torch.softmax(logits, dim=-1)
+                fake_probs = torch.as_tensor(
+                    [_transformer_anomaly_from_probs(row.detach().cpu().numpy()) for row in probs],
+                    dtype=torch.float32,
+                )
+                chunk_sum = fake_probs.sum()
+                sum_probs = chunk_sum if sum_probs is None else sum_probs + chunk_sum
+                fake_probs_all.extend(fake_probs.detach().cpu().numpy().tolist())
+                count += logits.shape[0]
+                return None
 
             if logits.shape[-1] == 1:
                 probs = torch.sigmoid(logits).squeeze(-1)
@@ -843,6 +1311,29 @@ def analyze_frame(frame: np.ndarray) -> dict:
     }
 
 
+def analyze_video_frequency(frames: list) -> dict:
+    from PIL import Image
+    from detectors.image_detector import frequency_analysis
+
+    if not frames:
+        return {"score": 0.0, "samples": 0, "spectral_ratio": 0.0}
+
+    scores = []
+    ratios = []
+    for item in frames[:MODEL_NUM_FRAMES]:
+        frame = item["frame"] if isinstance(item, dict) else item
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = frequency_analysis(Image.fromarray(rgb))
+        scores.append(float(result["freq_anomaly_score"]))
+        ratios.append(float(result["spectral_ratio"]))
+
+    return {
+        "score": round(float(np.mean(scores)) if scores else 0.0, 4),
+        "samples": len(scores),
+        "spectral_ratio": round(float(np.mean(ratios)) if ratios else 0.0, 4),
+    }
+
+
 def temporal_consistency(frame_results: list) -> dict:
     """Analyze temporal consistency across frames."""
     if len(frame_results) < 2:
@@ -901,7 +1392,7 @@ def temporal_consistency(frame_results: list) -> dict:
     }
 
 
-def detect_video(
+def _detect_video_impl(
     video_path: str,
     on_progress: Optional[Callable[[int, Optional[int]], None]] = None,
 ) -> dict:
@@ -910,15 +1401,68 @@ def detect_video(
     frames = []
 
     if not process_all:
-        frames = extract_uniform_frames(video_path, MODEL_NUM_FRAMES)
+        if MODEL_FRAME_SELECTION == "first":
+            frames = extract_first_frames(video_path, MODEL_NUM_FRAMES)
+        else:
+            frames = extract_uniform_frames(video_path, MODEL_NUM_FRAMES)
         if not frames:
             return {
                 "overall_score": 0.0,
                 "verdict": "ERROR",
+                "model_version": "unavailable",
                 "evidence": [{"type": "error", "title": "No frames extracted", "severity": "high"}],
             }
 
-    if _use_keras_backend():
+    model_configured = MODEL_PATH is not None or TORCH_USE_PRETRAINED
+
+    if MODEL_PIPELINE_MODE == "frequency_only":
+        if process_all:
+            frames = extract_all_frames(video_path, on_progress)
+        if not frames:
+            return {
+                "overall_score": 0.0,
+                "verdict": "ERROR",
+                "model_version": "frequency-domain-video",
+                "evidence": [{"type": "error", "title": "No frames extracted", "severity": "high"}],
+            }
+
+        freq = analyze_video_frequency(frames)
+        overall = round(min(max(freq["score"], 0), 1), 4)
+        if overall > VERDICT_MANIPULATED:
+            verdict = "MANIPULATED"
+        elif overall > VERDICT_SUSPICIOUS:
+            verdict = "SUSPICIOUS"
+        else:
+            verdict = "AUTHENTIC"
+        return {
+            "overall_score": overall,
+            "verdict": verdict,
+            "model_version": "frequency-domain-video",
+            "avg_frame_score": None,
+            "temporal_score": None,
+            "heuristic_score": overall,
+            "model_score": None,
+            "model_probs": None,
+            "model_fake_index": None,
+            "model_frames": len(frames),
+            "model_weight": None,
+            "face_coverage": None,
+            "model_frame_scores": None,
+            "frames_analyzed": len(frames),
+            "frame_scores": [],
+            "frames_total": len(frames),
+            "evidence": [{
+                "type": "frequency",
+                "title": "Frequency Domain Model",
+                "description": (
+                    f"Average spectral anomaly score {freq['score']:.2f} across {freq['samples']} sampled frames. "
+                    f"Mean spectral ratio: {freq['spectral_ratio']}."
+                ),
+                "severity": "high" if overall > 0.65 else "medium" if overall > 0.35 else "low",
+            }],
+        }
+
+    if model_configured and _use_keras_backend():
         # Keras model only
         if process_all:
             (
@@ -970,6 +1514,7 @@ def detect_video(
             return {
                 "overall_score": 0.0,
                 "verdict": "ERROR",
+                "model_version": f"keras:{MODEL_PATH.name}" if MODEL_PATH else "keras:unavailable",
                 "evidence": [{
                     "type": "model_error",
                     "title": "Model Inference Failed",
@@ -995,7 +1540,14 @@ def detect_video(
                 "description": model_error,
                 "severity": "high",
             })
-        else:
+        if _KERAS_WARN:
+            evidence.append({
+                "type": "model_warning",
+                "title": "Model Load Warning",
+                "description": _KERAS_WARN,
+                "severity": "low",
+            })
+        if model_score is not None:
             confidence = "high" if overall > 0.65 else "medium" if overall > 0.35 else "low"
             evidence.append({
                 "type": "model_score",
@@ -1007,6 +1559,7 @@ def detect_video(
         return {
             "overall_score": overall,
             "verdict": verdict,
+            "model_version": f"keras:{MODEL_PATH.name}" if MODEL_PATH else "keras:unavailable",
             "avg_frame_score": None,
             "temporal_score": None,
             "heuristic_score": None,
@@ -1028,7 +1581,7 @@ def detect_video(
     face_found = 0
     dlib_detector, dlib_error = _get_dlib_detector()
 
-    if REFERENCE_ONLY:
+    if REFERENCE_ONLY and model_configured:
         if process_all:
             (
                 model_score,
@@ -1076,6 +1629,10 @@ def detect_video(
             return {
                 "overall_score": 0.0,
                 "verdict": "ERROR",
+                "model_version": (
+                    f"torch-pretrained:{MODEL_NAME}" if TORCH_USE_PRETRAINED and MODEL_PATH is None
+                    else f"torch:{MODEL_PATH.name}" if MODEL_PATH else "torch:unavailable"
+                ),
                 "evidence": [{
                     "type": "model_error",
                     "title": "Model Inference Failed",
@@ -1101,6 +1658,13 @@ def detect_video(
                 "description": model_error,
                 "severity": "high",
             })
+        if _KERAS_WARN:
+            evidence.append({
+                "type": "model_warning",
+                "title": "Model Load Warning",
+                "description": _KERAS_WARN,
+                "severity": "low",
+            })
         if dlib_error:
             evidence.append({
                 "type": "face_detector",
@@ -1123,10 +1687,24 @@ def detect_video(
                 "description": f"Model manipulation probability: {model_score:.2f} (confidence: {confidence}).",
                 "severity": "high" if model_score > 0.65 else "medium" if model_score > 0.35 else "low",
             })
+            if TORCH_USE_PRETRAINED and MODEL_PATH is None:
+                evidence.append({
+                    "type": "transformer_status",
+                    "title": "Pretrained ViT/DeiT Signal",
+                    "description": (
+                        "This score comes from an ImageNet-pretrained transformer aggregated over video frames. "
+                        "It is treated as an experimental auxiliary signal, not a deepfake-trained classifier."
+                    ),
+                    "severity": "low",
+                })
 
         return {
             "overall_score": overall,
             "verdict": verdict,
+            "model_version": (
+                f"torch-pretrained:{MODEL_NAME}" if TORCH_USE_PRETRAINED and MODEL_PATH is None
+                else f"torch:{MODEL_PATH.name}" if MODEL_PATH else "torch:unavailable"
+            ),
             "avg_frame_score": None,
             "temporal_score": None,
             "heuristic_score": None,
@@ -1148,7 +1726,10 @@ def detect_video(
         frames = extract_all_frames(video_path, on_progress)
     else:
         if not frames:
-            frames = extract_uniform_frames(video_path, MODEL_NUM_FRAMES)
+            if MODEL_FRAME_SELECTION == "first":
+                frames = extract_first_frames(video_path, MODEL_NUM_FRAMES)
+            else:
+                frames = extract_uniform_frames(video_path, MODEL_NUM_FRAMES)
         if on_progress:
             on_progress(len(frames), len(frames))
 
@@ -1156,6 +1737,7 @@ def detect_video(
         return {
             "overall_score": 0.0,
             "verdict": "ERROR",
+            "model_version": "temporal-video-model" if MODEL_PIPELINE_MODE == "temporal_only" else "heuristics-only",
             "evidence": [{"type": "error", "title": "No frames extracted", "severity": "high"}],
         }
 
@@ -1196,12 +1778,22 @@ def detect_video(
     heuristic_overall = avg_frame_score * 0.6 + temporal["temporal_score"] * 0.4
     heuristic_overall = round(min(max(heuristic_overall, 0), 1), 4)
 
-    model_score, model_probs, model_frame_probs, model_error = _predict_video_model(model_frames)
+    if model_configured:
+        if _use_keras_backend():
+            model_score, model_probs, model_frame_probs, model_error = _predict_keras_model(model_frames)
+        else:
+            model_score, model_probs, model_frame_probs, model_error = _predict_video_model(model_frames)
+    else:
+        model_score, model_probs, model_frame_probs, model_error = None, None, None, None
 
     if model_error and MODEL_STRICT:
         return {
             "overall_score": 0.0,
             "verdict": "ERROR",
+            "model_version": (
+                f"torch-pretrained:{MODEL_NAME}" if TORCH_USE_PRETRAINED and MODEL_PATH is None
+                else f"torch:{MODEL_PATH.name}" if MODEL_PATH else "temporal-video-model"
+            ),
             "evidence": [{
                 "type": "model_error",
                 "title": "Model Inference Failed",
@@ -1269,6 +1861,16 @@ def detect_video(
             "description": f"Model manipulation probability: {model_score:.2f} (confidence: {confidence}).",
             "severity": "high" if model_score > 0.65 else "medium" if model_score > 0.35 else "low",
         })
+        if TORCH_USE_PRETRAINED and MODEL_PATH is None:
+            evidence.append({
+                "type": "transformer_status",
+                "title": "Pretrained ViT/DeiT Signal",
+                "description": (
+                    "This score comes from an ImageNet-pretrained transformer aggregated over video frames. "
+                    "It is treated as an experimental auxiliary signal, not a deepfake-trained classifier."
+                ),
+                "severity": "low",
+            })
         if model_weight is not None and model_weight < base_weight:
             evidence.append({
                 "type": "fusion",
@@ -1295,6 +1897,15 @@ def detect_video(
     return {
         "overall_score": overall,
         "verdict": verdict,
+        "model_version": (
+            "temporal-video-model"
+            if MODEL_PIPELINE_MODE == "temporal_only"
+            else (
+                f"torch-pretrained:{MODEL_NAME}"
+                if TORCH_USE_PRETRAINED and MODEL_PATH is None
+                else (f"{'keras' if _use_keras_backend() else 'torch'}:{MODEL_PATH.name}" if model_configured and MODEL_PATH else "heuristics-only")
+            )
+        ),
         "avg_frame_score": round(avg_frame_score, 4),
         "temporal_score": temporal["temporal_score"],
         "heuristic_score": heuristic_overall,
@@ -1310,3 +1921,17 @@ def detect_video(
         "evidence": evidence,
         "frames_total": len(frames),
     }
+
+
+def detect_video(
+    video_path: str,
+    on_progress: Optional[Callable[[int, Optional[int]], None]] = None,
+    model_config: Optional[dict] = None,
+) -> dict:
+    with _MODEL_RUNTIME_LOCK:
+        snapshot = _snapshot_runtime()
+        try:
+            _apply_runtime(model_config)
+            return _detect_video_impl(video_path, on_progress)
+        finally:
+            _restore_runtime(snapshot)

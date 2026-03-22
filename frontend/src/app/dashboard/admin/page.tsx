@@ -19,7 +19,7 @@ import { api } from '@/lib/api';
 
 const TARGET_OPTIONS = [
     { value: 'all', label: 'All Content', help: 'Apply the rule to every supported analysis type.' },
-    { value: 'media', label: 'Media Only', help: 'Use for image, video, and audio analysis results.' },
+    { value: 'media', label: 'Media Only', help: 'Use for image and video analysis results.' },
     { value: 'text', label: 'Text Only', help: 'Use for text and fake-news analysis results.' },
     { value: 'link', label: 'Link Only', help: 'Use for VirusTotal/urlscan link detections.' },
 ];
@@ -86,9 +86,6 @@ function renderMediaReviewPreview(detail: any) {
                     ) : null}
                     {detail?.media_type === 'video' && fileUrl ? (
                         <video controls src={fileUrl} className="w-full max-h-[420px] rounded-sm border border-slate-800 bg-black/30" />
-                    ) : null}
-                    {detail?.media_type === 'audio' && fileUrl ? (
-                        <audio controls src={fileUrl} className="w-full" />
                     ) : null}
                 </div>
 

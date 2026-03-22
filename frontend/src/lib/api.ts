@@ -120,10 +120,15 @@ class ApiClient {
         return response.json();
     }
 
-    async startAnalysis(analysisId: number) {
+    async startAnalysis(analysisId: number, selectedModel?: string | null) {
         return this.request(`/api/analysis/start/${analysisId}`, {
             method: 'POST',
+            body: JSON.stringify({ selected_model: selectedModel || 'auto' }),
         });
+    }
+
+    async getMediaModels(mediaType: 'image' | 'video') {
+        return this.request(`/api/models/${mediaType}`);
     }
 
     async getAnalysis(analysisId: number) {

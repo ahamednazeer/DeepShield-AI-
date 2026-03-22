@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { api } from '@/lib/api';
 import { StatusBadge } from '@/components/StatusBadge';
 import { useRouter } from 'next/navigation';
@@ -8,7 +8,6 @@ import {
     Upload,
     FileImage,
     FileVideo,
-    FileAudio,
     ShieldCheck,
     Warning,
     CheckCircle,
@@ -28,10 +27,22 @@ interface AnalysisResult {
     overall_score?: number;
     verdict?: string;
     processing_time?: number;
+    selected_model?: string | null;
+    model_version?: string | null;
     evidence?: any[];
     frames_total?: number | null;
     frames_processed?: number | null;
     progress_percent?: number | null;
+}
+
+interface ModelOption {
+    id: string;
+    label: string;
+    description?: string;
+    available: boolean;
+    recommended?: boolean;
+    experimental?: boolean;
+    resolved_default?: string | null;
 }
 
 export default function UploadPage() {
@@ -46,6 +57,53 @@ export default function UploadPage() {
     const [progress, setProgress] = useState('');
     const [progressPercent, setProgressPercent] = useState<number | null>(null);
     const [progressFrames, setProgressFrames] = useState<{ processed: number; total: number | null } | null>(null);
+    const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+    const [selectedModel, setSelectedModel] = useState('auto');
+    const [loadingModels, setLoadingModels] = useState(false);
+
+    const detectMediaType = useCallback((file: File | null): 'image' | 'video' | null => {
+        if (!file) return null;
+        if (file.type.startsWith('image/')) return 'image';
+        if (file.type.startsWith('video/')) return 'video';
+        const ext = file.name.toLowerCase().split('.').pop() || '';
+        if (['jpg', 'jpeg', 'png', 'bmp', 'webp', 'tiff'].includes(ext)) return 'image';
+        if (['mp4', 'avi', 'mov', 'mkv', 'webm'].includes(ext)) return 'video';
+        return null;
+    }, []);
+
+    const selectedMediaType = detectMediaType(selectedFile);
+
+    useEffect(() => {
+        const mediaType = detectMediaType(selectedFile);
+        setModelOptions([]);
+        setSelectedModel('auto');
+
+        if (!mediaType) {
+            return;
+        }
+
+        let cancelled = false;
+        setLoadingModels(true);
+        api.getMediaModels(mediaType)
+            .then((response) => {
+                if (cancelled) return;
+                setModelOptions(response.models || []);
+                setSelectedModel('auto');
+            })
+            .catch((err: any) => {
+                if (cancelled) return;
+                setError(err.message || 'Could not load model options');
+            })
+            .finally(() => {
+                if (!cancelled) {
+                    setLoadingModels(false);
+                }
+            });
+
+        return () => {
+            cancelled = true;
+        };
+    }, [detectMediaType, selectedFile]);
 
     const handleDragOver = useCallback((e: React.DragEvent) => {
         e.preventDefault();
@@ -80,7 +138,6 @@ export default function UploadPage() {
         const type = file.type;
         if (type.startsWith('image/')) return FileImage;
         if (type.startsWith('video/')) return FileVideo;
-        if (type.startsWith('audio/')) return FileAudio;
         return Upload;
     };
 
@@ -163,7 +220,7 @@ export default function UploadPage() {
             setProgress('Starting analysis...');
 
             // Step 2: Start analysis
-            await api.startAnalysis(uploadResult.id);
+            await api.startAnalysis(uploadResult.id, selectedModel);
             setProgress('Analysis in progress...');
 
             // Step 3: Poll for completion
@@ -200,53 +257,118 @@ export default function UploadPage() {
 
             {/* Dropzone */}
             {!result && (
-                <div
-                    onDragOver={handleDragOver}
-                    onDragLeave={handleDragLeave}
-                    onDrop={handleDrop}
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`relative border-2 border-dashed rounded-sm p-12 text-center cursor-pointer transition-all duration-300 ${isDragging
-                            ? 'border-blue-500 bg-blue-950/30 shadow-[0_0_30px_rgba(59,130,246,0.2)]'
-                            : 'border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50'
-                        }`}
-                >
-                    <input
-                        ref={fileInputRef}
-                        type="file"
-                        accept="image/*,video/*,audio/*,.mp4,.avi,.mov,.mp3,.wav,.flac"
-                        onChange={handleFileSelect}
-                        className="hidden"
-                    />
+                <div className="space-y-4">
+                    <div
+                        onDragOver={handleDragOver}
+                        onDragLeave={handleDragLeave}
+                        onDrop={handleDrop}
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`relative border-2 border-dashed rounded-sm p-12 text-center cursor-pointer transition-all duration-300 ${isDragging
+                                ? 'border-blue-500 bg-blue-950/30 shadow-[0_0_30px_rgba(59,130,246,0.2)]'
+                                : 'border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50'
+                            }`}
+                    >
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/*,video/*,.mp4,.avi,.mov"
+                            onChange={handleFileSelect}
+                            className="hidden"
+                        />
 
-                    {selectedFile ? (
-                        <div className="space-y-4">
-                            {React.createElement(getFileIcon(selectedFile), {
-                                size: 48,
-                                weight: 'duotone',
-                                className: 'text-blue-400 mx-auto',
-                            })}
-                            <div>
-                                <p className="text-slate-200 font-mono text-sm">{selectedFile.name}</p>
-                                <p className="text-slate-500 font-mono text-xs mt-1">{formatFileSize(selectedFile.size)}</p>
+                        {selectedFile ? (
+                            <div className="space-y-4">
+                                {React.createElement(getFileIcon(selectedFile), {
+                                    size: 48,
+                                    weight: 'duotone',
+                                    className: 'text-blue-400 mx-auto',
+                                })}
+                                <div>
+                                    <p className="text-slate-200 font-mono text-sm">{selectedFile.name}</p>
+                                    <p className="text-slate-500 font-mono text-xs mt-1">{formatFileSize(selectedFile.size)}</p>
+                                </div>
+                                <button
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setSelectedFile(null);
+                                        setModelOptions([]);
+                                        setSelectedModel('auto');
+                                    }}
+                                    className="text-slate-500 hover:text-red-400 transition-colors"
+                                >
+                                    <X size={20} />
+                                </button>
                             </div>
-                            <button
-                                onClick={(e) => {
-                                    e.stopPropagation();
-                                    setSelectedFile(null);
-                                }}
-                                className="text-slate-500 hover:text-red-400 transition-colors"
+                        ) : (
+                            <div className="space-y-4">
+                                <Upload size={48} weight="duotone" className="text-slate-600 mx-auto" />
+                                <div>
+                                    <p className="text-slate-300 text-lg font-medium">Drop media here or click to browse</p>
+                                    <p className="text-slate-500 font-mono text-xs mt-2">Supports: Images (PNG, JPG, BMP) · Video (MP4, AVI, MOV)</p>
+                                    <p className="text-slate-600 font-mono text-xs mt-1">Max file size: 50MB</p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+
+                    {selectedFile && selectedMediaType && (
+                        <div className="bg-slate-800/40 border border-slate-700/60 rounded-sm p-5 space-y-4">
+                            <div className="flex items-center justify-between gap-4 flex-wrap">
+                                <div>
+                                    <p className="text-xs text-slate-500 font-mono uppercase tracking-wider mb-1">Analysis Model</p>
+                                    <p className="text-sm text-slate-300">
+                                        Choose which {selectedMediaType} detector to run for this analysis.
+                                    </p>
+                                </div>
+                                <StatusBadge status={selectedMediaType} />
+                            </div>
+                            <select
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                disabled={loadingModels || modelOptions.length === 0}
+                                className="w-full rounded-sm border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm text-slate-200 outline-none focus:border-blue-500"
                             >
-                                <X size={20} />
-                            </button>
-                        </div>
-                    ) : (
-                        <div className="space-y-4">
-                            <Upload size={48} weight="duotone" className="text-slate-600 mx-auto" />
-                            <div>
-                                <p className="text-slate-300 text-lg font-medium">Drop media here or click to browse</p>
-                                <p className="text-slate-500 font-mono text-xs mt-2">Supports: Images (PNG, JPG, BMP) · Video (MP4, AVI, MOV) · Audio (MP3, WAV, FLAC)</p>
-                                <p className="text-slate-600 font-mono text-xs mt-1">Max file size: 50MB</p>
-                            </div>
+                                {loadingModels && <option value="auto">Loading models...</option>}
+                                {!loadingModels && modelOptions.map((option) => (
+                                    <option key={option.id} value={option.id} disabled={!option.available}>
+                                        {option.label}
+                                        {!option.available ? ' [Unavailable]' : ''}
+                                        {option.experimental ? ' [Experimental]' : ''}
+                                        {option.recommended ? ' [Recommended]' : ''}
+                                    </option>
+                                ))}
+                            </select>
+                            {!loadingModels && modelOptions.length > 0 && (
+                                <div className="grid gap-3 md:grid-cols-2">
+                                    {modelOptions.map((option) => (
+                                        <button
+                                            key={option.id}
+                                            type="button"
+                                            onClick={() => option.available && setSelectedModel(option.id)}
+                                            disabled={!option.available}
+                                            className={`rounded-sm border p-3 text-left transition-colors ${selectedModel === option.id
+                                                ? 'border-blue-500 bg-blue-950/30'
+                                                : 'border-slate-800 bg-slate-900/40 hover:border-slate-700'
+                                                } ${!option.available ? 'opacity-50 cursor-not-allowed hover:border-slate-800' : ''}`}
+                                        >
+                                            <div className="flex items-center justify-between gap-3">
+                                                <p className="text-sm text-slate-200">{option.label}</p>
+                                                <div className="flex gap-2">
+                                                    {option.recommended && <StatusBadge status="recommended" />}
+                                                    {option.experimental && <StatusBadge status="experimental" />}
+                                                    {!option.available && <StatusBadge status="unavailable" />}
+                                                </div>
+                                            </div>
+                                            {option.description && (
+                                                <p className="mt-2 text-xs text-slate-500 font-mono">{option.description}</p>
+                                            )}
+                                            {option.id === 'auto' && option.resolved_default && (
+                                                <p className="mt-2 text-xs text-blue-300 font-mono">Current default: {option.resolved_default}</p>
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -344,6 +466,14 @@ export default function UploadPage() {
                         <div className="bg-slate-800/40 border border-slate-700/60 rounded-sm p-4">
                             <p className="text-xs text-slate-500 font-mono uppercase tracking-wider mb-1">File Size</p>
                             <p className="text-sm text-slate-300 font-mono">{formatFileSize(result.file_size)}</p>
+                        </div>
+                        <div className="bg-slate-800/40 border border-slate-700/60 rounded-sm p-4">
+                            <p className="text-xs text-slate-500 font-mono uppercase tracking-wider mb-1">Requested Model</p>
+                            <p className="text-sm text-slate-300 font-mono">{result.selected_model || 'auto'}</p>
+                        </div>
+                        <div className="bg-slate-800/40 border border-slate-700/60 rounded-sm p-4">
+                            <p className="text-xs text-slate-500 font-mono uppercase tracking-wider mb-1">Model Used</p>
+                            <p className="text-sm text-slate-300 font-mono">{result.model_version || 'default'}</p>
                         </div>
                         <div className="bg-slate-800/40 border border-slate-700/60 rounded-sm p-4">
                             <p className="text-xs text-slate-500 font-mono uppercase tracking-wider mb-1">Processing</p>

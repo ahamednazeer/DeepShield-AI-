@@ -9,7 +9,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
     title: "DeepShield AI — Forensic Deepfake Detection",
-    description: "Forensic-grade deepfake detection platform powered by AI. Analyze images, videos, and audio for manipulation.",
+    description: "Forensic-grade deepfake detection platform powered by AI. Analyze images and videos for manipulation.",
 };
 
 export const viewport: Viewport = {
