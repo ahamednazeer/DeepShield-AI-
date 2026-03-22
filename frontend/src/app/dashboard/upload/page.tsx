@@ -40,6 +40,7 @@ interface ModelOption {
     label: string;
     description?: string;
     available: boolean;
+    availability_reason?: string | null;
     recommended?: boolean;
     experimental?: boolean;
     resolved_default?: string | null;
@@ -361,6 +362,9 @@ export default function UploadPage() {
                                             </div>
                                             {option.description && (
                                                 <p className="mt-2 text-xs text-slate-500 font-mono">{option.description}</p>
+                                            )}
+                                            {!option.available && option.availability_reason && (
+                                                <p className="mt-2 text-xs text-amber-300 font-mono">{option.availability_reason}</p>
                                             )}
                                             {option.id === 'auto' && option.resolved_default && (
                                                 <p className="mt-2 text-xs text-blue-300 font-mono">Current default: {option.resolved_default}</p>

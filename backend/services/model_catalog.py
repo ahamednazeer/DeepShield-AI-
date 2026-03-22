@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 from typing import Any
+
+try:
+    from services.pretrained_timm import has_timm, pretrained_timm_available
+except ModuleNotFoundError:  # pragma: no cover - import path depends on app cwd
+    from backend.services.pretrained_timm import has_timm, pretrained_timm_available
 
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
@@ -27,10 +31,6 @@ VIDEO_AUTO_ORDER = [
 
 def _model_path(filename: str) -> Path:
     return MODELS_DIR / filename
-
-
-def _has_timm() -> bool:
-    return importlib.util.find_spec("timm") is not None
 
 
 IMAGE_MODELS: list[dict[str, Any]] = [
@@ -256,7 +256,10 @@ def list_media_models(media_type: str) -> list[dict[str, Any]]:
         elif item.get("pipeline_mode") and not item.get("backend") and not item.get("requires_default_path"):
             item["available"] = bool(item.get("available", True))
         elif item.get("pretrained_weights"):
-            item["available"] = _has_timm()
+            available, reason = pretrained_timm_available(str(item.get("model_name") or model_id))
+            item["available"] = available
+            if reason:
+                item["availability_reason"] = reason
         elif item.get("requires_default_path"):
             item["available"] = default_id is not None
             item["resolved_default"] = default_id
@@ -318,8 +321,9 @@ def resolve_media_model_runtime(media_type: str, selected_model: str | None) -> 
         runtime["path"] = _model_path(default_id)
         runtime["filename"] = default_id
     elif runtime.get("pretrained_weights"):
-        if not _has_timm():
-            raise ValueError("timm is not installed, so pretrained ViT/DeiT models are unavailable.")
+        available, reason = pretrained_timm_available(str(runtime.get("model_name") or resolved_id))
+        if not available:
+            raise ValueError(reason or "Pretrained ViT/DeiT weights are unavailable.")
         runtime["path"] = None
         runtime["filename"] = runtime.get("model_name") or resolved_id
     elif runtime.get("pipeline_mode") and not runtime.get("backend"):

@@ -14,6 +14,11 @@ import cv2
 from pathlib import Path
 from typing import Optional, Tuple, Callable, List
 
+try:
+    from services.pretrained_timm import create_local_pretrained_timm_model
+except ModuleNotFoundError:  # pragma: no cover - import path depends on app cwd
+    from backend.services.pretrained_timm import create_local_pretrained_timm_model
+
 # Use Haar cascade for face detection (built-in to OpenCV, no extra models needed)
 HAAR_CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
@@ -484,47 +489,8 @@ def _torch_load_checkpoint(model_path: Path):
     return torch.load(str(model_path), **kwargs)
 
 
-def _hf_cache_has_weights(repo_id: str, candidate_filenames: list[str]) -> bool:
-    cache_root = Path(os.getenv("HF_HUB_CACHE", str(Path.home() / ".cache" / "huggingface" / "hub")))
-    repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
-    if not repo_dir.exists():
-        return False
-    for filename in candidate_filenames:
-        if filename and any(repo_dir.glob(f"**/{filename}")):
-            return True
-    return False
-
-
 def _create_pretrained_timm_model(model_name: str):
-    import timm
-
-    pretrained_cfg = timm.get_pretrained_cfg(model_name)
-    repo_id = getattr(pretrained_cfg, "hf_hub_id", None)
-    hf_filename = getattr(pretrained_cfg, "hf_hub_filename", None)
-    if repo_id:
-        candidate_filenames = [hf_filename] if hf_filename else []
-        candidate_filenames.extend(["model.safetensors", "pytorch_model.bin"])
-        if not _hf_cache_has_weights(repo_id, candidate_filenames):
-            raise RuntimeError(
-                f"Pretrained weights for {model_name} are not cached locally. "
-                "Download them once in an environment with internet access, then rerun."
-            )
-
-    previous_offline = os.environ.get("HF_HUB_OFFLINE")
-    previous_progress = os.environ.get("HF_HUB_DISABLE_PROGRESS_BARS")
-    os.environ["HF_HUB_OFFLINE"] = "1"
-    os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    try:
-        return timm.create_model(model_name, pretrained=True)
-    finally:
-        if previous_offline is None:
-            os.environ.pop("HF_HUB_OFFLINE", None)
-        else:
-            os.environ["HF_HUB_OFFLINE"] = previous_offline
-        if previous_progress is None:
-            os.environ.pop("HF_HUB_DISABLE_PROGRESS_BARS", None)
-        else:
-            os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = previous_progress
+    return create_local_pretrained_timm_model(model_name)
 
 
 def _transformer_anomaly_from_probs(probs_row: np.ndarray) -> float:

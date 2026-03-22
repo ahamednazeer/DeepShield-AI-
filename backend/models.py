@@ -209,6 +209,7 @@ class MediaModelOption(AppBaseModel):
     label: str
     description: Optional[str] = None
     available: bool = True
+    availability_reason: Optional[str] = None
     recommended: bool = False
     experimental: bool = False
     backend: Optional[str] = None
