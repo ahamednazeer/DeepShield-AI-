@@ -13,7 +13,6 @@ DeepShield AI is a full-stack trust-analysis platform with three primary analysi
 1. Media analysis
    - Images
    - Videos
-   - Audio
 2. Text verification
    - Claim-oriented misinformation / fake-news style analysis
 3. Link detection
